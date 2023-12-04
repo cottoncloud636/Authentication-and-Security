@@ -16,15 +16,27 @@
 
 // app.set('view engine', 'ejs');//explicitly tells Express to use EJS (Embedded JavaScript) as the templating engine.
 
-//level 2 security -- mongoose encryption: https://www.npmjs.com/package/mongoose-encryption
+//~~~~~~~~ level 2 security -- mongoose encryption: https://www.npmjs.com/package/mongoose-encryption
+
+//~~~~~~~~ 
+//level 3 security -- use hash function. Utilize MD5. MD5 (Message Digest Algorithm 5) is a widely used
+//cryptographic hash function that produces a 128-bit (16-byte) hash value. (although MD5 is not 
+//recommended for cryptographic purposes due to vulnerabilities that have been discovered). 
+//MD5 package is a JavaScript library that provides functionality to compute MD5 hashes. Any encrypted
+//psw can't be decrypted back to the original psw. https://www.npmjs.com/package/md5
+//~~~~~~~~
 
 import express from "express";
 import bodyParser from "body-parser";
                         
 import mongoose from "mongoose";   
-import encrypt from 'mongoose-encryption';
+// import encrypt from 'mongoose-encryption'; //-- mongoose-encryption: level 2 encryption
+// import md5 from "md5"; // -- level 3 encryption
 import 'dotenv/config';
 // console.log(process.env.API_KEY);
+import bcryptjs from 'bcryptjs';// -- level 4 security
+
+
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -86,15 +98,12 @@ userSchema.plugin(encrypt, { secret: secret });
 userSchema.plugin(encrypt, { secret: secret, encryptedFields: ['password']});
 */
 //######## let's use environment variables
-userSchema.plugin(encrypt, { secret: process.env.SECRET, encryptedFields: ['password']});
-
-
+// userSchema.plugin(encrypt, { secret: process.env.SECRET, encryptedFields: ['password']}); -- level 2 encryption
 
 
 //use the schema we just created to set up a new user model
 const User = new mongoose.model("User", userSchema);  //"User" is the name of our data collection
                                           //after this point, we can create users and add to userDB
-
 
 //display a home page, use get
 app.get ("/", (req, res)=>{
@@ -111,26 +120,35 @@ app.get ("/login", (req, res)=>{
     res.render("login.ejs");
 });
 
+
+const salt = bcryptjs.genSaltSync(10); //level 4, add salt to each psw
+
 //post the user input for email and password to /register endpoint
 /*!!!!!!!! only after user input for email and registration has no problems, then render the secrets.ejs page!!!!!!!!*/
 app.post("/register", (req, res)=>{
-    const newUser = new User({
-        email: req.body.username,
-        password: req.body.password
-    });
-    //save this new user information
-    //~~~~~~~~ level 2: in mongoose encryption, when we call save(), the psw field is automatically encrypted ~~~~~~~~*/
-    newUser.save().then(()=>{
-        res.render("secrets.ejs");
-    }).catch((err)=>{
-            console.log(err);
+    bcryptjs.hash(req.body.password, salt, (err, hash)=>{ // -- level 4 security
+        const newUser = new User({
+            email: req.body.username,
+            //password: req.body.password //--level 2 encryption
+            // password: md5(req.body.password) //--level 3 encryption, using md5 hash
+            password: hash //--level 4 security
         });
-    });
+        //save this new user information
+        //~~~~~~~~ level 2: in mongoose encryption, when we call save(), the psw field is automatically encrypted ~~~~~~~~*/
+        newUser.save().then(()=>{
+            res.render("secrets.ejs");
+        }).catch((err)=>{
+                console.log(err);
+            });
+        }) ;
+});
 
 //now, since user has registered email and psw, now they can submit their credentials to loging
 app.post("/login", (req, res)=>{
     const email = req.body.username;
-    const psw = req.body.password;
+    // const psw = req.body.password; //--level 2 encryption
+    // const psw = md5(req.body.password); //--level 3 encryption, using md5 hash
+    const psw = req.body.password;//-- level 4 security: bcrypt
     //first, let's find the email from the "User" model that user submitted during registration stage
     //~~~~~~~~ level 2: in mongoose encryption, when we call findOne(), the psw field is automatically decrypted ~~~~~~~~*/
     User.findOne({email: email}).exec().then(foundUser=>{ //findOne() is a method provided by Mongoose, which is an Object Data Modeling (ODM) library for
@@ -138,15 +156,17 @@ app.post("/login", (req, res)=>{
                                 //method native to JavaScript or MongoDB directly.
                                 // is used to find a single document in a collection that matches the specified criteria. It allows you to query the database for documents based on certain conditions and retrieve the first document that matches those conditions.
         if (foundUser) {
-            if (foundUser.password === psw) {
-                res.render("secrets.ejs");
+            // if (foundUser.password === psw) { //-- level 2, 3 security: compare password 
+            bcryptjs.compare(psw, foundUser.password, (err, result) => { //--level 4 security: compare the user input psw w. password stored in DB
+                if (result === true){
+                    res.render("secrets.ejs");
+                }
+            }); 
             }
-        }
-    }).catch(err => {
-        console.log(err);
+        });
     });
 
-    });
+    
 
 app.listen(3000, ()=>{
     console.log("Server running on port 3000");
