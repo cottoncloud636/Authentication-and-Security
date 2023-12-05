@@ -34,7 +34,12 @@ import mongoose from "mongoose";
 // import md5 from "md5"; // -- level 3 encryption
 import 'dotenv/config';
 // console.log(process.env.API_KEY);
-import bcryptjs from 'bcryptjs';// -- level 4 security
+// import bcryptjs from 'bcryptjs';// -- level 4 security
+
+//######## configure for using passport middleware
+import session from 'express-session';
+import passport from 'passport';
+import passportLocalMongoose from 'passport-local-mongoose';
 
 
 
@@ -42,8 +47,20 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
+//######## use passport for authentication middleware -- 
+//         express-seccion package: https://www.npmjs.com/package/express-session
+app.use(session({
+    secret: 'Our Little Secret.', //the secret string will be put into .env file later
+    resave: false,
+    saveUninitialized: false,
+  }));
 
-// ... Your connection code
+//###### use use passport for authentication middleware -- 
+//       passport package: https://www.npmjs.com/package/passport
+app.use(passport.initialize()); //initialize passport package
+app.use(passport.session()); //tell passport to use session middleware
+
+//connection to mongoose
 async function connectToDB() {
     try {
       await mongoose.connect("mongodb://127.0.0.1:27017/userDB");//if I use "localhost" instead of 127.0.0.1
@@ -54,10 +71,7 @@ async function connectToDB() {
       // Handle the error appropriately, maybe try reconnecting or terminate the app
     }
   }
-  
   connectToDB(); // Call the function to establish the connection
-  
-  // ... Rest of your code with error handling for database operations
   
 
 //######## create a mongo schema (aka. the DB structure) first
@@ -73,6 +87,12 @@ const userSchema = new mongoose.Schema({
     email: String,
     password: String
 });
+
+//###### use passport for authentication middleware -- 
+//       passport-local-mongoose package: https://www.npmjs.com/package/passport-local-mongoose
+userSchema.plugin(passportLocalMongoose);
+
+
 
 //######## https://www.npmjs.com/package/mongoose-encryption#secret-string-instead-of-two-keys
 //         using a convenient way to encryption, it's called Secret String Instead of Two Keys
@@ -105,6 +125,14 @@ userSchema.plugin(encrypt, { secret: secret, encryptedFields: ['password']});
 const User = new mongoose.model("User", userSchema);  //"User" is the name of our data collection
                                           //after this point, we can create users and add to userDB
 
+//###### use passport for authentication middleware --                                          
+//       use passport-local-mongoose, to serialize and deserialize data: 
+//       https://www.npmjs.com/package/passport-local-mongoose#simplified-passportpassport-local-configuration
+passport.use(User.createStrategy());
+
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+                                          
 //display a home page, use get
 app.get ("/", (req, res)=>{
     res.render("home.ejs");
@@ -121,53 +149,110 @@ app.get ("/login", (req, res)=>{
 });
 
 
-const salt = bcryptjs.genSaltSync(10); //level 4, add salt to each psw
+// const salt = bcryptjs.genSaltSync(10); //--level 4, add salt to each psw
 
 //post the user input for email and password to /register endpoint
 /*!!!!!!!! only after user input for email and registration has no problems, then render the secrets.ejs page!!!!!!!!*/
 app.post("/register", (req, res)=>{
-    bcryptjs.hash(req.body.password, salt, (err, hash)=>{ // -- level 4 security
-        const newUser = new User({
-            email: req.body.username,
-            //password: req.body.password //--level 2 encryption
-            // password: md5(req.body.password) //--level 3 encryption, using md5 hash
-            password: hash //--level 4 security
+    //######## start: the following implementation is for level 1 ~ level 4
+    // bcryptjs.hash(req.body.password, salt, (err, hash)=>{ // -- level 4 security
+    //     const newUser = new User({
+    //         email: req.body.username,
+    //         //password: req.body.password //--level 2 encryption
+    //         // password: md5(req.body.password) //--level 3 encryption, using md5 hash
+    //         password: hash //--level 4 security
+    //     });
+    //     //save this new user information
+    //     //~~~~~~~~ level 2: in mongoose encryption, when we call save(), the psw field is automatically encrypted ~~~~~~~~*/
+    //     newUser.save().then(()=>{
+    //         res.render("secrets.ejs");
+    //     }).catch((err)=>{
+    //             console.log(err);
+    //         });
+    //     }) ;
+    //######## end: the following implementation is for level 1 ~ level 4
+     //add {} around username: req.body.username is cuz it is an obj
+    User.register({username: req.body.username}, req.body.password, (err) =>{
+        //error occurs, stays in the register page
+        if (err) { 
+            console.log(err); 
+            res.redirect("/register");
+        }
+        //if no error, go ahead and authenticate user and stores the data to DB
+        else{
+            passport.authenticate("local")(req, res, function(){;//employ the 'local' strategy, means user's credentials (usually username/email and password) are verified against a database or some local data source maintained by the application.
+                res.redirect("/secrets");
         });
-        //save this new user information
-        //~~~~~~~~ level 2: in mongoose encryption, when we call save(), the psw field is automatically encrypted ~~~~~~~~*/
-        newUser.save().then(()=>{
-            res.render("secrets.ejs");
-        }).catch((err)=>{
-                console.log(err);
-            });
-        }) ;
+      }
+    //######## end: implementation of using passport register-- authentication middle for Node.js
+
+});
+});
+
+//######## start: implementation of using passport register -- authentication middleware for Node.js
+      //if user is already logged in, then no need to register, directly display "secret.ejs", if they
+      //are not logged in, direct them to login page, force them to login
+app.get("/secrets", (req, res)=>{
+    if (req.isAuthenticated()){
+        res.render("secrets.ejs");
+    } else {
+        res.redirect("/login");
+    }
 });
 
 //now, since user has registered email and psw, now they can submit their credentials to loging
+
 app.post("/login", (req, res)=>{
-    const email = req.body.username;
-    // const psw = req.body.password; //--level 2 encryption
-    // const psw = md5(req.body.password); //--level 3 encryption, using md5 hash
-    const psw = req.body.password;//-- level 4 security: bcrypt
-    //first, let's find the email from the "User" model that user submitted during registration stage
-    //~~~~~~~~ level 2: in mongoose encryption, when we call findOne(), the psw field is automatically decrypted ~~~~~~~~*/
-    User.findOne({email: email}).exec().then(foundUser=>{ //findOne() is a method provided by Mongoose, which is an Object Data Modeling (ODM) library for
-                                // MongoDB when you're using it in a Node.js environment. It's not a 
-                                //method native to JavaScript or MongoDB directly.
-                                // is used to find a single document in a collection that matches the specified criteria. It allows you to query the database for documents based on certain conditions and retrieve the first document that matches those conditions.
-        if (foundUser) {
-            // if (foundUser.password === psw) { //-- level 2, 3 security: compare password 
-            bcryptjs.compare(psw, foundUser.password, (err, result) => { //--level 4 security: compare the user input psw w. password stored in DB
-                if (result === true){
-                    res.render("secrets.ejs");
-                }
-            }); 
-            }
-        });
+    //######## start: the following implementation is for level 1 ~ level 4
+
+    // const email = req.body.username;
+    // // const psw = req.body.password; //--level 2 encryption
+    // // const psw = md5(req.body.password); //--level 3 encryption, using md5 hash
+    // const psw = req.body.password;//-- level 4 security: bcrypt
+    // //first, let's find the email from the "User" model that user submitted during registration stage
+    // //~~~~~~~~ level 2: in mongoose encryption, when we call findOne(), the psw field is automatically decrypted ~~~~~~~~*/
+    // User.findOne({email: email}).exec().then(foundUser=>{ //findOne() is a method provided by Mongoose, which is an Object Data Modeling (ODM) library for
+    //                             // MongoDB when you're using it in a Node.js environment. It's not a 
+    //                             //method native to JavaScript or MongoDB directly.
+    //                             // is used to find a single document in a collection that matches the specified criteria. It allows you to query the database for documents based on certain conditions and retrieve the first document that matches those conditions.
+    //     if (foundUser) {
+    //         // if (foundUser.password === psw) { //-- level 2, 3 security: compare password 
+    //         bcryptjs.compare(psw, foundUser.password, (err, result) => { //--level 4 security: compare the user input psw w. password stored in DB
+    //             if (result === true){
+    //                 res.render("secrets.ejs");
+    //             }
+    //         }); 
+    //         }
+    //     });
+
+    //######## end: implementation for level 1 ~ level 4
+
+
+    //######## start: implementation of using passport login-- authentication middle for Node.js
+    const user = new User({
+        username: req.body.username,
+        psw: req.body.passpord,
     });
-
+    req.login(user, function(err) {
+        if (err) { console.log(err); }
+        else {
+            passport.authenticate("local")(req, res, ()=>{
+                res.redirect("/secrets");
+            });
+        }
+    });
+    //######## end: implementation of using passport login-- authentication middle for Node.js
+    }); 
     
-
+    //######## use passport for authentication middleware --   
+    //         implement logout. What to do: do de-Authenticate user and end user session
+    app.get("/logout", (req, res)=>{
+        req.logout((err)=> {
+            if (err) { console.log(err); }
+            res.redirect('/');
+          });
+    });
+    
 app.listen(3000, ()=>{
     console.log("Server running on port 3000");
 });
